@@ -3,7 +3,9 @@
 #include "icvar.h"
 #include "tier1/iconvar.h"
 #include "tier1/convar.h"
+#include <Windows.h>
 
+#pragma comment(lib, "legacy_stdio_definitions.lib")
 
 // memdbgon must be the last include file in a .cpp file!!!
 //#include "tier0/memdbgon.h"
@@ -48,18 +50,193 @@ EnableFPSMax::EnableFPSMax() :  fps_max_cvar(NULL)
 
 }
 
+
+
+typedef enum GameTimerGTS {
+	GTS_NOTRUNNING,
+	GTS_NOTRUNNING_LOADING,
+	GTS_NOTRUNNING_LOADED,
+	GTS_RUNNING,
+	GTS_RUNNING_SCOREBOARD,
+	GTS_RUNNING_LEVELLOADING,
+	GTS_RUNNING_NOCAMPAIGN,
+	GTS_RUNNING_CAMPAIGNLOADING,
+	GTS_RUNNING_LOADED,
+}GameTimerGTS;
+
+static const bool *GameLoading;
+//static const bool *HasControl;
+static const bool *ScoreboardLoad;
+const unsigned char *Client;
+
+GameTimerGTS GTS;
+
+static const char *GetGTS(void)
+{
+	switch (GTS) 
+	{
+	case GTS_NOTRUNNING: return "GTS_NOTRUNNING";
+	case GTS_NOTRUNNING_LOADING: return "GTS_NOTRUNNING_LOADING";
+	case GTS_NOTRUNNING_LOADED: return "GTS_NOTRUNNING_LOADED";
+	case GTS_RUNNING: return "GTS_RUNNING";	
+	case GTS_RUNNING_SCOREBOARD: return "GTS_RUNNING_SCOREBOARD";
+	case GTS_RUNNING_LEVELLOADING: return "GTS_RUNNING_LEVELLOADING";
+	case GTS_RUNNING_NOCAMPAIGN: return "GTS_RUNNING_NOCAMPAIGN";
+	case GTS_RUNNING_CAMPAIGNLOADING: return "GTS_RUNNING_LOADED";
+	case GTS_RUNNING_LOADED: return "GTS_RUNNING_LOADED";
+	};
+	return "GTS_UNKNOWN";
+}
+
+
+DWORD StartTime = 0;
+DWORD SumLoads = 0;
+DWORD CurrentCampaign;
+
+DWORD SplitStartTime;
+DWORD LoadStartTime;
+
+DWORD CampaignStartTime;
+DWORD CampaignSumLoads;
+
+unsigned NumCampaigns = 1;
+
+static const bool HasControl(void) 
+{
+	/*const unsigned char *clientTemp = (Client + 0x574950);
+	const unsigned char *client2 = *(unsigned char **)clientTemp;
+	DevMsg("clientTemp %p\n", clientTemp);
+	DevMsg("client2 %p\n", client2);
+	return *(const bool*)(client2 + 0xC);*/
+
+
+	return  *(const bool*)((*(unsigned char**)(Client + 0x574950)) + 0xC);
+}
+
+void Setme_Dump_Status(const CCommand &args)
+{
+	Msg("GameLoading %u HasControl %u, ScoreboardLoad %u\n", *GameLoading, HasControl(), *ScoreboardLoad);
+	Msg("%s StartTime %u SumLoads %u CurrentCampaign %u SplitStartTime %u LoadStartTime %u CampaignStartTime %u CampaignSumLoads %u NumCampaigns %u\n", GetGTS(), StartTime, SumLoads, CurrentCampaign, SplitStartTime, LoadStartTime, CampaignStartTime, CampaignSumLoads, NumCampaigns);
+}
+static ConCommand setme_dump_status("setme_dump_status", Setme_Dump_Status, "dumps status", 0);
+
+void Setme_Reset(const CCommand &args)
+{
+	Msg("Resetting Run\n");
+	GTS = GTS_NOTRUNNING;
+	SumLoads = 0;
+	CurrentCampaign = 0;
+
+}
+static ConCommand setme_reset("setme_reset", Setme_Reset, "resets run", 0);
+
+static void OnCampaignStart(DWORD curtime)
+{
+	SplitStartTime = curtime;
+	CampaignStartTime = curtime;
+	GTS = GTS_RUNNING;
+}
+
 //---------------------------------------------------------------------------------
 // Purpose: called once per server frame, do recurring work here (like checking for timeouts)
 //---------------------------------------------------------------------------------
-void EnableFPSMax::GameFrame( bool simulating )
+void EnableFPSMax::GameFrame(bool simulating)
 {
+	if (GTS == GTS_NOTRUNNING)
+	{
+		if (*GameLoading) GTS = GTS_NOTRUNNING_LOADING;
+	}
+	else if (GTS == GTS_NOTRUNNING_LOADING)
+	{
+		if (! *GameLoading) GTS = GTS_NOTRUNNING_LOADED;
+	}
+	else if (GTS == GTS_NOTRUNNING_LOADED)
+	{
+		if (HasControl())
+		{
+			StartTime = GetTickCount();
+			OnCampaignStart(StartTime);
+			Msg("Started Campaign at %u\n", StartTime);
+		}
+	}
+	else if (GTS == GTS_RUNNING)
+	{
+		if (*ScoreboardLoad)
+		{
+			DWORD curtime = GetTickCount();
+			Msg("Split time %u\n", curtime - SplitStartTime);
+			SplitStartTime = curtime;
+			GTS = GTS_RUNNING_SCOREBOARD;
+		}
+		else if (!HasControl())
+		{
+			DWORD curtime = GetTickCount();
+			SumLoads += CampaignSumLoads;
+			Msg("Split time %u\n", curtime - SplitStartTime);
+			Msg("Campaign %u took %u\n", CurrentCampaign, (curtime - CampaignStartTime) - CampaignSumLoads);
+			if ((CurrentCampaign + 1) == NumCampaigns)
+			{
+				Msg("Run took %u\n", curtime - StartTime - SumLoads);
+				SumLoads = 0;
+				CurrentCampaign = 0;
+				GTS = GTS_NOTRUNNING;
+			    return;
+			}
+			SplitStartTime = curtime;
+			GTS = GTS_RUNNING_NOCAMPAIGN;
+		}
+	}
+	else if (GTS == GTS_RUNNING_SCOREBOARD)
+	{
+		if (*GameLoading)
+		{
+			LoadStartTime = GetTickCount();
+			GTS = GTS_RUNNING_LEVELLOADING;
+		}
+	}
+	else if (GTS == GTS_RUNNING_LEVELLOADING)
+	{
+		if (HasControl())
+		{
+			CampaignSumLoads += (GetTickCount() - LoadStartTime);
+			GTS = GTS_RUNNING;
+		}
+	}
+	else if (GTS == GTS_RUNNING_NOCAMPAIGN)
+	{
+		if (*GameLoading)
+		{
+			LoadStartTime = GetTickCount();
+			GTS = GTS_RUNNING_CAMPAIGNLOADING;
+		}
+	}
+	else if (GTS == GTS_RUNNING_CAMPAIGNLOADING)
+	{
+		if (! *GameLoading)
+		{
+			uint64 curtime = GetTickCount();
+			SumLoads += curtime - LoadStartTime;
+			CurrentCampaign++;
+			CampaignSumLoads = 0;
+			GTS = GTS_RUNNING_LOADED;
+		}
+	}
+	else if (GTS == GTS_RUNNING_LOADED)
+	{
+		if (HasControl())
+		{
+			OnCampaignStart(GetTickCount());
+		}
+	}
 }
+
 
 //---------------------------------------------------------------------------------
 // Purpose: called when the plugin is loaded, load the interface we need from the engine
 //---------------------------------------------------------------------------------
 bool EnableFPSMax::Load( CreateInterfaceFn interfaceFactory, CreateInterfaceFn gameServerFactory )
 {
+	
 	ICvar * pCvars = reinterpret_cast<ICvar *>(interfaceFactory(CVAR_INTERFACE_VERSION,NULL));
 	
 	if(pCvars == NULL)
@@ -70,6 +247,8 @@ bool EnableFPSMax::Load( CreateInterfaceFn interfaceFactory, CreateInterfaceFn g
 
 	DevMsg("FPS Max Enabler: Found CVar interface %08x\n", pCvars);
 
+
+	/*
 	fps_max_cvar = pCvars->FindVar("fps_max");
 	if(fps_max_cvar == NULL)
 	{
@@ -79,6 +258,27 @@ bool EnableFPSMax::Load( CreateInterfaceFn interfaceFactory, CreateInterfaceFn g
 	DevMsg("FPS Max Enabler: Found fps_max cvar %08x\n", fps_max_cvar);
 	
 	fps_max_cvar->RemoveFlags(FCVAR_DEVELOPMENTONLY);
+	DevMsg("FPS Max Enabler : FCVAR_REPLICATED %u\n", fps_max_cvar->IsFlagSet(FCVAR_REPLICATED));
+	*/
+
+	GTS = GTS_NOTRUNNING;
+
+	const HANDLE engine = GetModuleHandle("engine");
+	Client = (const unsigned char*)GetModuleHandle("client");
+	DevMsg("Engine at 0x%p, Client at 0x%p\n", engine, Client);
+	if ((engine == NULL) || (Client == NULL)) return false;
+
+	//1.0
+	GameLoading = (const bool*)(((const unsigned char*)engine) + 0x5D1E6C);	
+	ScoreboardLoad = (const bool*)(Client + 0x5900E9);
+
+	
+	
+
+	// register our console commands
+	pCvars->RegisterConCommand(&setme_dump_status);
+	pCvars->RegisterConCommand(&setme_reset);
+
 	return true;
 }
 
@@ -87,7 +287,8 @@ bool EnableFPSMax::Load( CreateInterfaceFn interfaceFactory, CreateInterfaceFn g
 //---------------------------------------------------------------------------------
 void EnableFPSMax::Unload( void )
 {
-	fps_max_cvar->AddFlags(FCVAR_DEVELOPMENTONLY);
+    
+	//fps_max_cvar->AddFlags(FCVAR_DEVELOPMENTONLY);
 }
 
 //---------------------------------------------------------------------------------
@@ -109,7 +310,10 @@ void EnableFPSMax::UnPause( void )
 //---------------------------------------------------------------------------------
 const char *EnableFPSMax::GetPluginDescription( void )
 {
-	return "fps_max Enabler 1.0, ProdigySim";
+	
+
+	//return "fps_max Enabler 1.0, ProdigySim";
+	return "SET ME 1.0, G4Vi";
 }
 
 //---------------------------------------------------------------------------------
@@ -117,6 +321,8 @@ const char *EnableFPSMax::GetPluginDescription( void )
 //---------------------------------------------------------------------------------
 void EnableFPSMax::LevelInit( char const *pMapName )
 {
+	DevMsg("GameLoading %u HasControl %u, ScoreboardLoad %u\n", *GameLoading, HasControl(), *ScoreboardLoad);
+	//DevMsg("FPS Max Enabler : LevelInit\n");
 }
 
 //---------------------------------------------------------------------------------
@@ -132,6 +338,7 @@ void EnableFPSMax::ServerActivate( edict_t *pEdictList, int edictCount, int clie
 //---------------------------------------------------------------------------------
 void EnableFPSMax::LevelShutdown( void ) // !!!!this can get called multiple times per map change
 {
+	DevMsg("SET ME : LevelShutdown\n");
 }
 
 //---------------------------------------------------------------------------------
@@ -139,6 +346,7 @@ void EnableFPSMax::LevelShutdown( void ) // !!!!this can get called multiple tim
 //---------------------------------------------------------------------------------
 void EnableFPSMax::ClientActive( edict_t *pEntity )
 {
+	DevMsg("SET ME : ClientActive\n");
 }
 
 //---------------------------------------------------------------------------------
