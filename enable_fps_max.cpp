@@ -130,6 +130,30 @@ void Setme_Reset(const CCommand &args)
 }
 static ConCommand setme_reset("setme_reset", Setme_Reset, "resets run", 0);
 
+
+typedef void*(__thiscall *FINDENTITYBYCLASSNAME)(void*, void *, const char*);
+FINDENTITYBYCLASSNAME FindEntityByClassname;
+unsigned char *gEntList;
+void Setme_FindEntityByClassname(const CCommand &args)
+{
+	if (args.ArgC() < 2)
+	{
+		Warning("bad febc");
+		return;
+	}
+	Msg("Finding entity with classname %s\n",  args[1]);
+	void *last = FindEntityByClassname(gEntList, NULL, args[1]);
+	while (last)
+	{
+		Msg("Entity: 0x%p\n", last);
+		last = FindEntityByClassname(gEntList, last, args[1]);
+	}	
+}
+static ConCommand setme_fbec("setme_fbec", Setme_FindEntityByClassname, "FindEntityByClassname", 0);
+
+
+
+
 static void OnCampaignStart(DWORD curtime)
 {
 	SplitStartTime = curtime;
@@ -170,66 +194,125 @@ void EnableFPSMax::GameFrame(bool simulating)
 		}
 		else if (!HasControl())
 		{
-			DWORD curtime = GetTickCount();
-			SumLoads += CampaignSumLoads;
-			Msg("Split time %u\n", curtime - SplitStartTime);
-			Msg("Campaign %u took %u\n", CurrentCampaign, (curtime - CampaignStartTime) - CampaignSumLoads);
-			if ((CurrentCampaign + 1) == NumCampaigns)
-			{
-				Msg("Run took %u\n", curtime - StartTime - SumLoads);
-				SumLoads = 0;
-				CurrentCampaign = 0;
-				GTS = GTS_NOTRUNNING;
-			    return;
-			}
-			SplitStartTime = curtime;
-			GTS = GTS_RUNNING_NOCAMPAIGN;
+DWORD curtime = GetTickCount();
+SumLoads += CampaignSumLoads;
+Msg("Split time %u\n", curtime - SplitStartTime);
+Msg("Campaign %u took %u\n", CurrentCampaign, (curtime - CampaignStartTime) - CampaignSumLoads);
+if ((CurrentCampaign + 1) == NumCampaigns)
+{
+	Msg("Run took %u\n", curtime - StartTime - SumLoads);
+	SumLoads = 0;
+	CurrentCampaign = 0;
+	GTS = GTS_NOTRUNNING;
+	return;
+}
+SplitStartTime = curtime;
+GTS = GTS_RUNNING_NOCAMPAIGN;
 		}
 	}
 	else if (GTS == GTS_RUNNING_SCOREBOARD)
 	{
-		if (*GameLoading)
-		{
-			LoadStartTime = GetTickCount();
-			GTS = GTS_RUNNING_LEVELLOADING;
-		}
+	if (*GameLoading)
+	{
+		LoadStartTime = GetTickCount();
+		GTS = GTS_RUNNING_LEVELLOADING;
+	}
 	}
 	else if (GTS == GTS_RUNNING_LEVELLOADING)
 	{
-		if (HasControl())
-		{
-			CampaignSumLoads += (GetTickCount() - LoadStartTime);
-			GTS = GTS_RUNNING;
-		}
+	if (HasControl())
+	{
+		CampaignSumLoads += (GetTickCount() - LoadStartTime);
+		GTS = GTS_RUNNING;
+	}
 	}
 	else if (GTS == GTS_RUNNING_NOCAMPAIGN)
 	{
-		if (*GameLoading)
-		{
-			LoadStartTime = GetTickCount();
-			GTS = GTS_RUNNING_CAMPAIGNLOADING;
-		}
+	if (*GameLoading)
+	{
+		LoadStartTime = GetTickCount();
+		GTS = GTS_RUNNING_CAMPAIGNLOADING;
+	}
 	}
 	else if (GTS == GTS_RUNNING_CAMPAIGNLOADING)
 	{
-		if (! *GameLoading)
-		{
-			uint64 curtime = GetTickCount();
-			SumLoads += curtime - LoadStartTime;
-			CurrentCampaign++;
-			CampaignSumLoads = 0;
-			GTS = GTS_RUNNING_LOADED;
-		}
+	if (!*GameLoading)
+	{
+		uint64 curtime = GetTickCount();
+		SumLoads += curtime - LoadStartTime;
+		CurrentCampaign++;
+		CampaignSumLoads = 0;
+		GTS = GTS_RUNNING_LOADED;
+	}
 	}
 	else if (GTS == GTS_RUNNING_LOADED)
 	{
-		if (HasControl())
-		{
-			OnCampaignStart(GetTickCount());
-		}
+	if (HasControl())
+	{
+		OnCampaignStart(GetTickCount());
+	}
 	}
 }
 
+
+unsigned  char* hex_decode(const char *in, size_t len, unsigned char *out)
+{
+	unsigned int i, t, hn, ln;
+
+	for (t = 0, i = 0; i < len; i += 2, ++t) {
+
+		hn = in[i] > '9' ? in[i] - 'A' + 10 : in[i] - '0';
+		ln = in[i + 1] > '9' ? in[i + 1] - 'A' + 10 : in[i + 1] - '0';
+
+		out[t] = (hn << 4) | ln;
+	}
+
+	return out;
+}
+
+bool isPageOK(void *address)
+{
+	MEMORY_BASIC_INFORMATION mbi = { 0 };
+	unsigned char *pAddress = NULL, *pEndRegion = NULL;
+	DWORD dwProtectionMask = PAGE_READONLY | PAGE_EXECUTE_WRITECOPY | PAGE_READWRITE | PAGE_WRITECOMBINE;
+	while (sizeof(mbi) == VirtualQuery(pEndRegion, &mbi, sizeof(mbi))) {
+		pAddress = pEndRegion;
+		pEndRegion += mbi.RegionSize;
+		if ((mbi.AllocationProtect & dwProtectionMask) && (mbi.State & MEM_COMMIT))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+#include <Psapi.h>
+unsigned char *findSig(void *start, const char *bytes)
+{
+	MODULEINFO mi;
+	BOOL res = GetModuleInformation(GetCurrentProcess(), (HMODULE)start, &mi, sizeof(mi));
+	if (!res) return NULL;
+	unsigned char *sbytes = (unsigned char*)start;
+	unsigned numbytes = strlen(bytes) / 2;
+	unsigned i;
+
+DO_IT_AGAIN:
+	for (i = 0; i < (numbytes * 2); i += 2)
+	{
+		if ((((DWORD)&sbytes[i]) - (DWORD)start) >=( mi.SizeOfImage))
+		{
+			DevMsg("sbytes %p i %u\n", sbytes, i);
+			return NULL;
+		}
+		if ((bytes[i] == '?') && (bytes[i + 1] == '?')) continue;		
+		unsigned char out;
+		hex_decode(&bytes[i], 2, &out);		
+		if (out == sbytes[i/2]) continue;	
+		sbytes += 1;
+		goto DO_IT_AGAIN;
+	}
+	if (i != 0) return sbytes;
+	return NULL;
+}
 
 //---------------------------------------------------------------------------------
 // Purpose: called when the plugin is loaded, load the interface we need from the engine
@@ -237,16 +320,39 @@ void EnableFPSMax::GameFrame(bool simulating)
 bool EnableFPSMax::Load( CreateInterfaceFn interfaceFactory, CreateInterfaceFn gameServerFactory )
 {
 	
-	ICvar * pCvars = reinterpret_cast<ICvar *>(interfaceFactory(CVAR_INTERFACE_VERSION,NULL));
-	
+	ICvar * pCvars = reinterpret_cast<ICvar *>(interfaceFactory(CVAR_INTERFACE_VERSION,NULL));	
 	if(pCvars == NULL)
 	{
 		Warning("FPS Max Enabler: Failed to get Cvar interface.\n");
 		return false;
 	}
-
 	DevMsg("FPS Max Enabler: Found CVar interface %08x\n", pCvars);
 
+	char *serverdll = (char*)GetModuleHandle("server.dll");
+
+	if (serverdll == NULL)
+	{
+		Warning("FPS Max Enabler: Failed to find serverdll\n");
+		return false;
+	}
+	const unsigned char *LevelShutdown = findSig(serverdll, "E8????????E8????????B9????????E8????????E8");
+	if (LevelShutdown == NULL)
+	{
+		Warning("FPS Max Enabler: Failed to find LevelShutdown\n");
+		return false;
+	}
+	DevMsg("FPS Max Enabler: Found LevelShutdown 0x%p\n", LevelShutdown);	
+	
+	memcpy(&gEntList, LevelShutdown + 11, 4);
+	DevMsg("FPS Max Enabler: Found gEntList at 0x%p\n", gEntList);
+
+    FindEntityByClassname = (FINDENTITYBYCLASSNAME)findSig(serverdll, "5355568BF18B4C241085C95774198B018B5008FFD28B0025FF0F000083C001C1E0048B3C30EB068BBE????????85FF74398B5C24188B2D????????EB03");
+	if (FindEntityByClassname == NULL)
+	{
+		Warning("FPS Max Enabler: Failed to find FindEntityByClassname\n");
+		return false;
+	}
+	DevMsg("FPS Max Enabler: Found FindEntityByClassname at 0x%p\n", FindEntityByClassname);
 
 	/*
 	fps_max_cvar = pCvars->FindVar("fps_max");
@@ -278,6 +384,7 @@ bool EnableFPSMax::Load( CreateInterfaceFn interfaceFactory, CreateInterfaceFn g
 	// register our console commands
 	pCvars->RegisterConCommand(&setme_dump_status);
 	pCvars->RegisterConCommand(&setme_reset);
+	pCvars->RegisterConCommand(&setme_fbec);
 
 	return true;
 }
