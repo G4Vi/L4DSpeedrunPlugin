@@ -134,6 +134,36 @@ static ConCommand setme_reset("setme_reset", Setme_Reset, "resets run", 0);
 typedef void*(__thiscall *FINDENTITYBYCLASSNAME)(void*, void *, const char*);
 FINDENTITYBYCLASSNAME FindEntityByClassname;
 unsigned char *gEntList;
+
+typedef string_t(__thiscall *CBASEENTITYGETMODELNAME)(void*);
+CBASEENTITYGETMODELNAME CBaseEntityGetModelName;
+
+typedef const char*(__thiscall *CBASEENTITYGETSERVERCLASS)(void*);
+CBASEENTITYGETSERVERCLASS CBaseEntityGetServerClass;
+
+typedef void(__thiscall *CBASEENTITYTHINK)(void*);
+CBASEENTITYTHINK oldCBaseEntityThink;
+CBASEENTITYTHINK CBaseEntityThink;
+struct Dumb
+{
+	void Think(void)
+	{
+		Msg("Thinking hard\n");
+		oldCBaseEntityThink(this);
+	}
+	
+};
+
+
+
+
+
+/*
+CBASEENTITYTHINKA CBaseEntityThink;
+typedef void(__thiscall Dumb::*CBASEENTITYTHINKA)(void*);
+*/
+
+#include<stdint.h>
 void Setme_FindEntityByClassname(const CCommand &args)
 {
 	if (args.ArgC() < 2)
@@ -146,6 +176,46 @@ void Setme_FindEntityByClassname(const CCommand &args)
 	while (last)
 	{
 		Msg("Entity: 0x%p\n", last);
+		if (strcmp(args[1], "point_viewcontrol_survivor") == 0)
+		{
+			DWORD vtable = *(DWORD*)last;
+			Msg("CSurvivorCamera vtable at %p\n", vtable);
+			//1.0 offsets
+			/*CBaseEntityGetModelName = *(CBASEENTITYGETMODELNAME*)(vtable + (0x7 * sizeof(DWORD)));
+			Msg("GetModelName at %p\n", CBaseEntityGetModelName);
+			string_t val = CBaseEntityGetModelName(last);
+			// CBaseEntityGetModelName(last));*/
+
+			/*
+			CBaseEntityGetServerClass = *(CBASEENTITYGETSERVERCLASS*)(vtable + (0x9 * sizeof(DWORD)));
+			Msg("serverclass at %p\n", CBaseEntityGetServerClass(last));
+			*/
+			static bool done = false;
+			if (!done)
+			{
+				oldCBaseEntityThink = *(CBASEENTITYTHINK*)(vtable + (47 * sizeof(DWORD)));
+				Msg("Think Func at %p\n", oldCBaseEntityThink);				
+				auto func = &Dumb::Think;
+				CBaseEntityThink = (CBASEENTITYTHINK&)func;
+				SIZE_T dumb;
+				DWORD oldProtect = 0;
+				LPVOID addr = (LPVOID)(vtable + (47 * sizeof(DWORD))); 
+				VirtualProtectEx(GetCurrentProcess(), addr, 256, PAGE_EXECUTE_READWRITE, &oldProtect);
+				if (WriteProcessMemory(GetCurrentProcess(), addr, &CBaseEntityThink, 4, &dumb) == 0)
+				{
+					Msg("WPM failed %d\n", GetLastError());
+				}
+				else
+				{
+					Msg("WPM success %d\n", GetLastError());
+				}
+				VirtualProtectEx(GetCurrentProcess(), addr, 256, oldProtect, NULL);
+				done = true;
+			}
+			
+
+
+		}
 		last = FindEntityByClassname(gEntList, last, args[1]);
 	}	
 }
